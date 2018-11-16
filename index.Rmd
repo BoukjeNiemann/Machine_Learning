@@ -1,0 +1,277 @@
+---
+title: "Predicting Exercises class"
+author: "Boukje Niemann"
+date: "15-11-2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+```
+
+```{r models, include=FALSE, cache=TRUE}
+rpart.fit <- readr::read_rds("rpartfit")
+rpart.fit.pca <- readr::read_rds("rpartfitpca")
+treebag.fit <- readr::read_rds("treebagfit")
+gbm.fit <- readr::read_rds("gbmfit")
+gbm.fit2 <- readr::read_rds("gbmfit2")
+rf.fit1 <- readr::read_rds("rffit1")
+rf.fit2 <- readr::read_rds("rffit2")
+rf.fit3 <- readr::read_rds("rffit3")
+rf.fit4 <- readr::read_rds("rffit4")
+```
+
+## The Weight Lifting Exercises Dataset and prediction problem
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+There were sensors in the users’ glove, armband, lumbar belt and dumbbell.
+
+Read more: <http://groupware.les.inf.puc-rio.br/har#sbia_paper_section#ixzz5UZ2JA3aJ>
+
+The data of the sensors are in the dataset given together with some calculated data:
+For  feature  extraction  they  used  a  sliding  window  approach
+with different lengths from 0.5 second to 2.5 seconds, with
+0.5 second overlap.  In each step of the sliding window approach 
+they calculated features on the Euler angles (roll, pitch
+and yaw), as well as the raw accelerometer, gyroscope and
+magnetometer readings.  For the Euler angles of each of the
+four  sensors  they  calculated  eight  features:  mean,  variance,
+standard deviation, max, min, amplitude, kurtosis and skewness, 
+generating in total 4 sensors x 3 Euler angles x 8 features = 96 derived feature sets.
+
+The challence is to predict the correct way the excercise was done (the classe variable) for 20 new test cases. For this to have a right answer for 95% of the cases we need a prediction model with a test accuray of 99.7%.
+
+## Exploratory Data Analysis
+
+While reading in the dataset there are some of those extra 96 features filled with the value "#DIV/0!" causing the column to be read as text instead of numeric. So we replaced this with NA and converted the values that were still not having the right class to numeric. This also has to be done at the reading in of the test set. So they should be the same for the prediction variables.
+```{r, results='hide'}
+training <- read.csv("pml-training.csv", na.strings = c("#DIV/0!", "NA"))
+classes <- sapply(training, class)
+classes[classes=="logical"]
+logicals <- names(classes[classes=="logical"])
+for (i in 1: length(logicals)) {training[, logicals[i]] <- as.numeric(training[, logicals[i]])}
+classes <- sapply(training, class)
+unique(classes)
+classes[classes=="factor"]
+testing <- read.csv("pml-testing.csv", na.strings = c("#DIV/0!", "NA"))
+for (i in 1: length(logicals)) {testing[, logicals[i]] <- as.numeric(testing[, logicals[i]])}
+class(testing[,-160]) == class(training[,-160])
+```
+All outcomes of the variable classe are well-represented.
+```{r}
+table(training$classe)
+```
+The size of the training set is:
+```{r}
+dim(training)
+```
+
+Just looking at one variable at a time give you respect for what these classification models can do using all variables.
+
+```{r}
+qplot(total_accel_dumbbell,colour = classe, data = training, geom ="density")
+```
+
+## Variable selection
+So the number of observations n >> p the number of variables. But there are still a lot of variables, the first identifing the rownumber, then the participants name followed by 5 features related with the time. Next are the raw data and the derived data, finally the last column contains the class of the excercise we will want to predict. Normally for a practical use of the data you would only use the raw sensor data. The derived data is only filled in when the new_window variable equals yes. They could be used to define which variables are the most interesting, as they did in the study. But in this study I want to see what machine learning techniques can do. So the potential features for our model are:
+```{r}
+varnames <- colnames(training)
+raw <- grepl("(^roll_)|(^pitch_)|(^yaw_)|(^gyros_)|(^accel_)|(^magnet_)|(^total_)", varnames)
+varnames[raw]
+```
+The other variables are derived, except for the first 7 and the last.
+```{r}
+derived <- !raw
+derived[c(1:7,160)] <- FALSE
+```
+
+
+```{r, include= FALSE}
+result <- data.frame()
+result[1,1] <- rpart.fit$results$Accuracy[1]
+result[1,2] <- rpart.fit$times$everything[1]
+result[1,3] <- rpart.fit$times$everything[2]
+result[1,4] <- object.size(rpart.fit)/10^6
+result[1,5] <- "10-fold"
+result[1,6] <- "cp (30)"
+#
+result[2,1] <- rpart.fit.pca$results$Accuracy[1]
+result[2,2] <- rpart.fit.pca$times$everything[1]
+result[2,3] <- rpart.fit.pca$times$everything[2]
+result[2,4] <- object.size(rpart.fit.pca)/10^6
+result[2,5] <- "10-fold"
+result[2,6] <- "cp (30)"
+#
+result[3,1] <- treebag.fit$results$Accuracy[1]
+result[3,2] <- treebag.fit$times$everything[1]
+result[3,3] <- treebag.fit$times$everything[2]
+result[3,4] <- object.size(treebag.fit)/10^6
+result[3,5] <- "10-fold"
+result[3,6] <- "none"
+#
+result[4,1] <- gbm.fit$results$Accuracy[9]
+result[4,2] <- gbm.fit$times$everything[1]
+result[4,3] <- gbm.fit$times$everything[2]
+result[4,4] <- object.size(gbm.fit)/10^6
+result[4,5] <- "10-fold"
+result[4,6] <- "interaction.depth = 1:3, n.trees = 50, 100, 150"
+#
+result[5,1] <- gbm.fit2$results$Accuracy[60]
+result[5,2] <- gbm.fit2$times$everything[1]
+result[5,3] <- gbm.fit2$times$everything[2]
+result[5,4] <- object.size(gbm.fit2)/10^6
+result[5,5] <- "10-fold"
+result[5,6] <- "interaction.depth = 1:5, n.trees = 50, 100, ..., 300, shrinkage = 0.01, 0.001"
+#
+result[6,1] <- rf.fit1$results$Accuracy[1]
+result[6,2] <- rf.fit1$times$everything[1]
+result[6,3] <- rf.fit1$times$everything[2]
+result[6,4] <- object.size(rf.fit1)/10^6
+result[6,5] <- "oob"
+result[6,6] <- "mtry = 17"
+#
+result[7,1] <- rf.fit2$results$Accuracy[8]
+result[7,2] <- rf.fit2$times$everything[1]
+result[7,3] <- rf.fit2$times$everything[2]
+result[7,4] <- object.size(rf.fit2)/10^6
+result[7,5] <- "oob"
+result[7,6] <- "mtry = 2:52"
+#
+result[8,1] <- rf.fit3$results$Accuracy[4]
+result[8,2] <- rf.fit3$times$everything[1]
+result[8,3] <- rf.fit3$times$everything[2]
+result[8,4] <- object.size(rf.fit3)/10^6
+result[8,5] <- "10-fold"
+result[8,6] <- "mtry = 5:15"
+#
+result[9,1] <- rf.fit4$results$Accuracy[6]
+result[9,2] <- rf.fit4$times$everything[1]
+result[9,3] <- rf.fit4$times$everything[2]
+result[9,4] <- object.size(rf.fit4)/10^6
+result[9,5] <- "10 bootstrap"
+result[9,6] <- "mtry = 5:15"
+#
+result[,4] <- round(result[,4],1)
+row.names(result) <- c("rpart.fit","rpart.fit.pca", "treebag.fit", "gbm.fit", "gbm.fit2", "rf.fit1", "rf.fit2","rf.fit3", "rf.fit4")
+colnames(result) <- c("Accuracy final model", "user time", "system time", "model size in MB", "cross-validation", "tuning parameter(s)")
+```
+
+
+## Method selection
+
+There are many models to consider. So we will look at a few and see which one does best. To learn how to use the caret package and see the difference between models we will also run a few that probably will not be the best.
+To speed up calculation we will use parallel calculation. The calculation was done on a Macbook Pro with 16MB and 2 cores.
+
+The method and model to choose will be the one with the highest accuracy. For learning purposes, also speed and size of the model in MB's will be looked at.
+The methods to consider are a prediction tree with the CART algorithm (rpart), the same with principal component analysis as preprocess, bagging (treebag), boosting (gbm) and random forest (rf).
+
+The code how the models were run is shown below.
+The results were:
+
+```{r echo=FALSE}
+knitr::kable(result)
+```
+
+The rpart makes 1 tree and starts pruning it to get a smaller tree, so the complexity gets less.
+The final model has an accuracy that is not high enough for our purpose. Also one expects that the use of more trees will make the accuracy go up. That is actually the case with the other methods.
+The preprocessed tree does even worse.
+
+The bagging method does pretty well, but creates a very large model, because it saves all used trees, because it needs it for prediction.
+
+With boosting the shrinkage was kept constant at 0.1 for the first model. In the second fit shrinkage 0.01 and 0.001 were tried with different interaction depths and number of trees. The calculation time goes up drastically if more parameters need to be tried. The minimum number of observations in one node was kept constant in all cases at 10.
+
+Finally, the random forest was run with different tuneLengths and cross validation methods.
+One can see that the oob validation method performs best, because 51 models were tried in the same time in the second run, as 11 models in the third and fourth run.
+In the first fit the tuneLength was set on 1, so I expected the number of variables to choose from (mtry) to be around 7, the squareroot of 52, which is the default, but it came up with 17.
+
+So I am pleased to see that the best random forest method is also the one which tries the most models and uses not to much calculation time and uses not to much memory.
+
+It is also the best overall method, so the model I will use on the test cases is rf.fit2. The expected out of sample error being estimated with the out of bag method is almost 99,76%.
+The confusion matrix is quite sparce.
+```{r}
+rf.fit2$finalModel$confusion
+```
+
+
+## Model selection with different cross-validation methods
+
+The best rpart model is chosen by cross-validation on 10 folds comparing models with increasing complexity as calculated by the cp parameter. The simplest one is best in this case.
+
+```{r echo=FALSE}
+plot(rpart.fit)
+```
+
+With the bagging method the cros-validation was only used to calculate the accuracy on  10 different folds. It was not used to chose between models, since only one model was formed.
+
+With the gradient boosting method the cross-validation helped chose between all different possibilities of the tuning parameters. The art is to know in which range you have to search to avoid a lot of calculation.
+
+```{r echo=FALSE}
+plot(gbm.fit2)
+```
+
+The most interesting is the cross-validation methods used on the random forest tries. The cross-validation is used to chose between the different random forest models created by the choice of the number of variables to chose at when creating the random forest trees. 
+
+The traditional methods are bootstrapping or k-fold which need separate subsets of the observations to be made and to calculate all the different models on. The default for bootstrap is 25 subsets, but I changed it to 10 to compare it with 10-fold CV and to not have a long time to wait on the result because of increating calculation time. With each set at 10 the methods are quite comparable because the underling dataset has many observations. If this was not the case bootstrap would probably do better than k-fold.
+
+For the random forest method there is a more efficient method for cross-validation as pointed out by [Leo Breiman](https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#workings). In the making of the trees bootstrapped samples are used to create them. The observations not used to create the tree are called the out-of-bag observations, can be used to calculate the out of sample error with. Since each observation is not used in about a third of the trees, this leaves a large enough collection of estimates to produce a good (unbias) estimation of the out of sample error. Since the accuracy can be determined along with the creating of the trees the method is quite efficient and does not use extra memory. So that is the reason I dared to try the full set of possibilities for the mtry parameter.
+
+```{r echo=FALSE}
+plot(rf.fit2)
+```
+
+## The source code for the models
+```{r eval=FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+library(caret)
+set.seed(95014)
+rpart.fit <- train(training[,raw], training$classe, method = "rpart", tuneLength = 30,
+                     trControl = trainControl(method = "cv", number = 10, allowParallel = TRUE))
+readr::write_rds(rpart.fit, "rpartfit") # store for later use
+
+rpart.fit.pca <- train(training[,raw], training$classe, method = "rpart", preProcess = "pca", tuneLength = 30,
+                     trControl = trainControl(method = "cv", number = 10, allowParallel = TRUE))
+readr::write_rds(rpart.fit.pca,"rpartfitpca")
+
+treebag.fit = train(training[,raw], training$classe, method = "treebag",
+                     trControl = trainControl(method = "cv", number = 10))
+#readr::write_rds(treebag.fit,"treebagfit") 1,3 GB !
+readr::write_rds(treebag.fit,"treebagfit", compress = "gz")
+
+gbm.fit = train(training[,raw], training$classe, method = "gbm",
+                     trControl = trainControl(method = "cv", number = 10))
+readr::write_rds(gbm.fit,"gbmfit")
+
+tgrid <- expand.grid(n.trees = seq(50,300,50),interaction.depth = 1:5, shrinkage = c(0.01,0.001), n.minobsinnode = 10)
+gbm.fit2 <- train(training[,raw], training$classe, method = "gbm",
+                trControl = trainControl(method = "cv", number = 10),
+                tuneGrid = tgrid)
+readr::write_rds(gbm.fit2,"gbmfit2")
+
+rf.fit1 <- train(training[,raw], training$classe, method = "rf", tuneLength = 1,
+                trControl = trainControl(method = "oob", allowParallel = TRUE) )
+readr::write_rds(rf.fit1,"rffit1")
+
+rf.fit2 <- train(training[,raw], training$classe, method="rf", tuneLength = 52,
+                 trControl = trainControl(method = "oob", allowParallel = TRUE))
+readr::write_rds(rf.fit2,"rffit2")
+
+tgrid <- expand.grid(mtry = 5:15)
+rf.fit3 <- train(training[,raw], training$classe, method="rf",
+                 trControl = trainControl(method = "cv", number = 10, allowParallel = TRUE),
+                 tuneGrid = tgrid)
+readr::write_rds(rf.fit3,"rffit3")
+
+rf.fit4 <- train(training[,raw], training$classe, method="rf",
+                 trControl = trainControl(method = "boot", number = 10, allowParallel = TRUE),
+                 tuneGrid = tgrid)
+readr::write_rds(rf.fit4,"rffit4")
+
+stopCluster(cluster)
+registerDoSEQ()
+```
+
